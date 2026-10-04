@@ -220,6 +220,24 @@
   #weightChart{width:100%;height:150px;display:block;margin-top:6px;}
   .chartempty{text-align:center;color:var(--ink-faint);font-size:.88rem;padding:20px 0;}
 
+  /* Semana */
+  .week__bars{position:relative;display:flex;align-items:flex-end;gap:8px;height:120px;margin-top:4px;}
+  .week__col{flex:1;display:flex;justify-content:center;align-items:flex-end;height:100%;}
+  .week__bar{width:100%;max-width:34px;border-radius:8px 8px 4px 4px;background:var(--teal);min-height:4px;transition:height .5s cubic-bezier(.22,1,.36,1);}
+  .week__bar--warn{background:var(--honey);}
+  .week__bar--over{background:var(--danger);}
+  .week__bar--empty{background:var(--surface-2);}
+  .week__goal{position:absolute;left:0;right:0;border-top:1.5px dashed var(--honey);pointer-events:none;}
+  .week__labels{display:flex;gap:8px;margin-top:7px;margin-bottom:6px;}
+  .week__lab{flex:1;text-align:center;font-size:.7rem;color:var(--ink-faint);font-weight:700;line-height:1.3;}
+  .week__lab b{display:block;color:var(--ink-soft);font-weight:700;text-transform:capitalize;}
+  .week__lab--today b{color:var(--teal);}
+
+  /* Recientes */
+  .entry--tap{cursor:pointer;}
+  .entry__add{width:36px;height:36px;border-radius:11px;background:var(--teal-tint);color:var(--teal-deep);font-size:1.3rem;font-weight:700;display:grid;place-items:center;flex-shrink:0;}
+  .sugcard__add{margin-top:12px;}
+
   /* Bottom nav */
   .nav{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.94);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid var(--line);display:flex;max-width:520px;margin:0 auto;padding-bottom:env(safe-area-inset-bottom);z-index:50;}
   .nav__item{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:10px 0 9px;color:var(--ink-faint);font-size:.68rem;font-weight:700;}
@@ -230,7 +248,7 @@
   .nav__addbtn svg{width:26px;height:26px;stroke-width:2.4;}
 
   .hidden{display:none!important;}
-  .toast{position:fixed;left:50%;bottom:88px;transform:translateX(-50%) translateY(20px);background:var(--ink);color:#fff;padding:12px 18px;border-radius:14px;font-size:.9rem;font-weight:600;box-shadow:var(--shadow);opacity:0;transition:all .3s;z-index:100;max-width:90%;text-align:center;}
+  .toast{position:fixed;left:50%;bottom:88px;transform:translateX(-50%) translateY(20px);background:var(--ink);color:#fff;padding:12px 18px;border-radius:14px;font-size:.9rem;font-weight:600;box-shadow:var(--shadow);opacity:0;transition:all .3s;z-index:100;max-width:90%;text-align:center;pointer-events:none;}
   .toast--show{opacity:1;transform:translateX(-50%) translateY(0);}
 
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
@@ -347,7 +365,7 @@ async function callClaude(messages){
   }
   const response = await fetch("https://api.anthropic.com/v1/messages",{
     method:"POST", headers,
-    body:JSON.stringify({ model, max_tokens:1000, messages })
+    body:JSON.stringify({ model, max_tokens:1500, messages })
   });
   if(!response.ok){ let d=''; try{d=await response.text();}catch(e){} throw new Error('API '+response.status+' '+d); }
   const data = await response.json();
@@ -422,13 +440,32 @@ function computeTargets(p){
 let perfil = null;   // {sexo,edad,peso,altura,actividad,pesoObjetivo,ritmo,macroModo,objetivos}
 let dia = null;      // {fecha, entradas:[]}
 let pesos = [];      // [{fecha,peso}]
-let pendingEntry = null; // resultado de análisis pendiente de confirmar
+let pendingEntry = null; // resultado de análisis pendiente de confirmar (o entrada en edición)
+let historial = [];  // días anteriores con registros, del más reciente al más antiguo
 
 async function loadAll(){
   perfil = await store.get('perfil');
   pesos  = (await store.get('pesos')) || [];
   const dk = 'dia:'+todayKey();
   dia = (await store.get(dk)) || {fecha:todayKey(), entradas:[]};
+  await loadHistorial();
+}
+// Carga los últimos n días (sin contar hoy) que tengan algo registrado
+async function loadHistorial(n=30){
+  const out=[], base=new Date();
+  for(let i=1;i<=n;i++){
+    const d=new Date(base); d.setDate(base.getDate()-i);
+    const v=await store.get('dia:'+d.toLocaleDateString('sv'));
+    if(v && v.entradas && v.entradas.length) out.push(v);
+  }
+  historial=out;
+}
+// Si la app sigue abierta al pasar la medianoche, empieza un día nuevo
+async function ensureToday(){
+  if(dia.fecha===todayKey()) return false;
+  dia = (await store.get('dia:'+todayKey())) || {fecha:todayKey(), entradas:[]};
+  await loadHistorial();
+  return true;
 }
 async function saveDia(){ await store.set('dia:'+dia.fecha, dia); }
 async function saveProfile(){ await store.set('perfil', perfil); }
@@ -448,8 +485,9 @@ function totales(){
 let obData = { sexo:'h', edad:'', peso:'', altura:'', actividad:'', pesoObjetivo:'', ritmo:'', macroModo:'equilibrado' };
 
 function renderOnboarding(){
+  const editando = !!(perfil && perfil.objetivos);
   app.innerHTML = `
-  <div class="ob">
+  <div class="ob" ${editando?'style="padding-bottom:180px"':''}>
     <div class="ob__brand">
       <div class="ob__logo">B</div>
       <div class="ob__brandname">Báscula</div>
@@ -502,7 +540,10 @@ function renderOnboarding(){
 
     <div id="preview"></div>
   </div>
-  <div class="cta"><button class="btn" id="btnStart" disabled>Calcular mi objetivo</button></div>`;
+  <div class="cta">
+    <button class="btn" id="btnStart" disabled>${editando?'Guardar cambios':'Calcular mi objetivo'}</button>
+    ${editando?`<button class="btn btn--ghost" style="margin-top:10px" id="btnObCancel">Cancelar</button>`:''}
+  </div>`;
 
   // eventos
   $('#segSexo').addEventListener('click',e=>{const b=e.target.closest('[data-v]');if(!b)return;obData.sexo=b.dataset.v;[...e.currentTarget.children].forEach(c=>c.classList.toggle('seg--on',c===b));refreshOb();});
@@ -517,6 +558,7 @@ function renderOnboarding(){
     });
   });
   $('#btnStart').addEventListener('click',finishOnboarding);
+  if(editando) $('#btnObCancel').addEventListener('click',()=>renderApp('perfil'));
   refreshOb();
 }
 function bindChoice(sel,key){
@@ -568,10 +610,17 @@ async function finishOnboarding(){
   const p={sexo:obData.sexo,edad:+obData.edad,peso:+obData.peso,altura:+obData.altura,
     actividad:obData.actividad,pesoObjetivo:+obData.pesoObjetivo,ritmo:obData.ritmo,macroModo:obData.macroModo};
   p.objetivos=computeTargets(p);
+  // al editar el perfil, conserva la clave y el modelo de la IA
+  if(perfil){ p.apiKey=perfil.apiKey; p.apiModel=perfil.apiModel; }
   perfil=p;
   await saveProfile();
-  // registra primer peso
-  if(!pesos.length){ pesos.push({fecha:todayKey(),peso:p.peso}); await savePesos(); }
+  // registra el peso si es el primero o si ha cambiado
+  const ultimo=pesos[pesos.length-1];
+  if(!ultimo || ultimo.peso!==p.peso){
+    const ex=pesos.find(x=>x.fecha===todayKey());
+    if(ex) ex.peso=p.peso; else pesos.push({fecha:todayKey(),peso:p.peso});
+    await savePesos();
+  }
   renderApp('hoy');
 }
 
@@ -606,7 +655,7 @@ function switchTab(tab){
   currentTab=tab;
   app.querySelectorAll('.screen').forEach(s=>s.classList.toggle('screen--on','s-'+tab===s.id));
   app.querySelectorAll('.nav__item').forEach(n=>n.classList.toggle('nav__item--on',n.dataset.tab===tab));
-  if(tab==='prog') drawChart();
+  if(tab==='prog') renderProg(); // refresca semana y gráfico con los últimos datos
 }
 
 /* ---------- Pantalla HOY ---------- */
@@ -676,7 +725,8 @@ function renderHoy(){
       ${dia.entradas.length?`<button class="link" id="goSug">¿Qué me falta? →</button>`:''}</div>
     <div id="entradasList">${entradasHTML}</div>`;
 
-  $('#s-hoy').querySelectorAll('.entry__del').forEach(b=>b.addEventListener('click',()=>delEntry(b.dataset.id)));
+  $('#s-hoy').querySelectorAll('.entry__del').forEach(b=>b.addEventListener('click',ev=>{ev.stopPropagation();delEntry(b.dataset.id);}));
+  $('#s-hoy').querySelectorAll('.entry[data-id]').forEach(el=>el.addEventListener('click',()=>editEntry(el.dataset.id)));
   $('#s-hoy').querySelectorAll('.drink').forEach(b=>b.addEventListener('click',()=>addBebida(b.dataset.tipo)));
   const gs=$('#goSug'); if(gs) gs.addEventListener('click',()=>{switchTab('sug');fetchSuggestions();});
 }
@@ -691,6 +741,7 @@ function drinkBtn(tipo){
   </button>`;
 }
 async function addBebida(tipo){
+  await ensureToday();
   const b=BEBIDAS[tipo];
   dia.entradas.push({id:'e'+Date.now(),bebida:tipo,nombre:b.nombre,img:null,kcal:b.kcal,prot:b.prot,carb:b.carb,fat:b.fat});
   await saveDia();
@@ -701,7 +752,7 @@ function entryHTML(e){
   const thumb = e.img
     ? `<img class="entry__thumb" src="${e.img}" alt="">`
     : `<div class="entry__thumb entry__thumb--icon">${e.bebida?BEBIDAS[e.bebida].icon:'🍴'}</div>`;
-  return `<div class="entry">
+  return `<div class="entry entry--tap" data-id="${e.id}">
     ${thumb}
     <div class="entry__body">
       <div class="entry__name">${esc(e.nombre)}</div>
@@ -713,8 +764,13 @@ function entryHTML(e){
 }
 async function delEntry(id){
   dia.entradas=dia.entradas.filter(e=>e.id!==id);
-  await saveDia(); renderHoy();
+  await saveDia(); renderHoy(); renderAdd();
   toast('Comida eliminada');
+}
+function editEntry(id){
+  const e=dia.entradas.find(x=>x.id===id); if(!e) return;
+  switchTab('add');
+  showEntryEditor({...e}, true);
 }
 
 /* ---------- Pantalla AÑADIR ---------- */
@@ -734,18 +790,58 @@ function renderAdd(){
       <button class="btn btn--ghost" style="margin-top:12px" id="btnManual">Introducir manualmente</button>
       <input type="file" id="fileCam" accept="image/*" capture="environment" class="hidden">
       <input type="file" id="fileGal" accept="image/*" class="hidden">
+      ${recientesHTML()}
     </div>`;
   $('#btnCam').addEventListener('click',()=>$('#fileCam').click());
   $('#btnGal').addEventListener('click',()=>$('#fileGal').click());
   $('#fileCam').addEventListener('change',onFile);
   $('#fileGal').addEventListener('change',onFile);
-  $('#btnManual').addEventListener('click',showManual);
+  $('#btnManual').addEventListener('click',()=>showManual());
+  $('#s-add').querySelectorAll('[data-rec]').forEach(b=>b.addEventListener('click',()=>addReciente(+b.dataset.rec)));
 }
 function onFile(e){ const f=e.target.files[0]; if(f) handlePhoto(f); e.target.value=''; }
 
+/* ---------- Comidas recientes (repetir con un toque) ---------- */
+let _recientes=[];
+function recientes(){
+  const seen=new Set(), out=[];
+  const todas=[...dia.entradas.slice().reverse(), ...historial.flatMap(d=>d.entradas.slice().reverse())];
+  for(const e of todas){
+    if(e.bebida) continue;
+    const k=String(e.nombre||'').trim().toLowerCase();
+    if(!k || seen.has(k)) continue;
+    seen.add(k); out.push(e);
+    if(out.length>=6) break;
+  }
+  return out;
+}
+function recientesHTML(){
+  _recientes=recientes();
+  if(!_recientes.length) return '';
+  return `<div class="sectionhead"><span class="sectionhead__t">Repetir una comida reciente</span></div>
+    ${_recientes.map((e,i)=>`<div class="entry">
+      ${e.img?`<img class="entry__thumb" src="${e.img}" alt="">`:`<div class="entry__thumb entry__thumb--icon">🍴</div>`}
+      <div class="entry__body">
+        <div class="entry__name">${esc(e.nombre)}</div>
+        <div class="entry__macros num">${r0(e.kcal)} kcal · P ${r0(e.prot)} · H ${r0(e.carb)} · G ${r0(e.fat)}</div>
+      </div>
+      <button class="entry__add" data-rec="${i}" aria-label="Añadir ${esc(e.nombre)}">+</button>
+    </div>`).join('')}`;
+}
+async function addReciente(i){
+  const e=_recientes[i]; if(!e) return;
+  await ensureToday();
+  dia.entradas.push({id:'e'+Date.now(),nombre:e.nombre,img:e.img||null,kcal:e.kcal,prot:e.prot,carb:e.carb,fat:e.fat});
+  await saveDia();
+  renderHoy(); renderAdd(); switchTab('hoy');
+  toast(`${e.nombre} añadida (+${r0(e.kcal)} kcal)`);
+}
+
 async function handlePhoto(file){
   const stage=$('#addStage');
-  const dataUrl = await downscale(file, 1024, 0.82);
+  let dataUrl;
+  try{ dataUrl = await downscale(file, 1024, 0.82); }
+  catch(e){ toast('No he podido abrir esa imagen. Prueba con otra.'); return; }
   stage.innerHTML=`
     <div class="preview">
       <img class="preview__img" src="${dataUrl}" alt="">
@@ -769,7 +865,9 @@ async function handlePhoto(file){
 function downscale(file, maxDim, q){
   return new Promise((resolve,reject)=>{
     const img=new Image();
+    const url=URL.createObjectURL(file);
     img.onload=()=>{
+      URL.revokeObjectURL(url);
       let {width:w,height:h}=img;
       const scale=Math.min(1, maxDim/Math.max(w,h));
       w=Math.round(w*scale); h=Math.round(h*scale);
@@ -777,8 +875,8 @@ function downscale(file, maxDim, q){
       cv.getContext('2d').drawImage(img,0,0,w,h);
       resolve(cv.toDataURL('image/jpeg',q));
     };
-    img.onerror=reject;
-    img.src=URL.createObjectURL(file);
+    img.onerror=e=>{ URL.revokeObjectURL(url); reject(e); };
+    img.src=url;
   });
 }
 
@@ -835,20 +933,26 @@ function editField(id,key,val){
 }
 async function guardarEntry(){
   pendingEntry.nombre=$('#edNombre').value.trim()||'Comida';
-  pendingEntry.kcal=+$('#edKcal').value||0;
-  pendingEntry.prot=+$('#edProt').value||0;
-  pendingEntry.carb=+$('#edCarb').value||0;
-  pendingEntry.fat=+$('#edFat').value||0;
-  // Guardamos solo una miniatura ligera (la lista la muestra a 52px)
-  if(pendingEntry.img){
-    try{ pendingEntry.img = await makeThumb(pendingEntry.img, 160, 0.6); }catch(e){}
+  pendingEntry.kcal=Math.max(+$('#edKcal').value||0,0);
+  pendingEntry.prot=Math.max(+$('#edProt').value||0,0);
+  pendingEntry.carb=Math.max(+$('#edCarb').value||0,0);
+  pendingEntry.fat=Math.max(+$('#edFat').value||0,0);
+  await ensureToday();
+  const idx=dia.entradas.findIndex(e=>e.id===pendingEntry.id);
+  if(idx>=0){
+    dia.entradas[idx]=pendingEntry;
+  } else {
+    // Guardamos solo una miniatura ligera (la lista la muestra a 52px)
+    if(pendingEntry.img){
+      try{ pendingEntry.img = await makeThumb(pendingEntry.img, 160, 0.6); }catch(e){}
+    }
+    dia.entradas.push(pendingEntry);
   }
-  dia.entradas.push(pendingEntry);
   await saveDia();
   pendingEntry=null;
   renderHoy();
   switchTab('hoy');
-  toast('Comida guardada ✓');
+  toast(idx>=0?'Cambios guardados ✓':'Comida guardada ✓');
   renderAdd();
 }
 // Genera una miniatura pequeña a partir de un dataURL (ahorra espacio de guardado)
@@ -866,23 +970,29 @@ function makeThumb(dataUrl, size, q){
   });
 }
 function showManual(dataUrl){
-  pendingEntry={id:'e'+Date.now(),nombre:'',img:dataUrl||null,kcal:0,prot:0,carb:0,fat:0};
+  showEntryEditor({id:'e'+Date.now(),nombre:'',img:dataUrl||null,kcal:0,prot:0,carb:0,fat:0}, false);
+}
+// Formulario para crear una entrada a mano o editar una ya guardada
+function showEntryEditor(entry, editando){
+  pendingEntry=entry;
+  const big = !editando && entry.img;
   $('#addStage').innerHTML=`
-    ${dataUrl?`<div class="preview"><img class="preview__img" src="${dataUrl}" alt=""></div>`:''}
-    <div class="editcard" style="margin-top:${dataUrl?'16px':'0'}">
+    ${editando?`<div class="sectionhead" style="margin-top:4px"><span class="sectionhead__t">Editar comida</span></div>`:''}
+    ${big?`<div class="preview"><img class="preview__img" src="${entry.img}" alt=""></div>`:''}
+    <div class="editcard" style="margin-top:${big?'16px':'0'}">
       <label class="field__label">Nombre del plato</label>
-      <input class="control" id="edNombre" placeholder="p. ej. Pollo con arroz">
+      <input class="control" id="edNombre" placeholder="p. ej. Pollo con arroz" value="${esc(entry.nombre)}">
       <div class="editgrid">
-        ${editField('edKcal','kcal',0)}
-        ${editField('edProt','prot',0)}
-        ${editField('edCarb','carb',0)}
-        ${editField('edFat','fat',0)}
+        ${editField('edKcal','kcal',entry.kcal)}
+        ${editField('edProt','prot',entry.prot)}
+        ${editField('edCarb','carb',entry.carb)}
+        ${editField('edFat','fat',entry.fat)}
       </div>
-      <button class="btn" style="margin-top:14px" id="btnGuardar">Guardar en el día</button>
+      <button class="btn" style="margin-top:14px" id="btnGuardar">${editando?'Guardar cambios':'Guardar en el día'}</button>
       <button class="btn btn--ghost" style="margin-top:10px" id="btnCancelar">Cancelar</button>
     </div>`;
   $('#btnGuardar').addEventListener('click',guardarEntry);
-  $('#btnCancelar').addEventListener('click',()=>renderAdd());
+  $('#btnCancelar').addEventListener('click',()=>{ pendingEntry=null; renderAdd(); if(editando) switchTab('hoy'); });
 }
 
 /* ---------- Pantalla IDEAS (sugerencias IA) ---------- */
@@ -894,7 +1004,9 @@ function renderSug(){
     <button class="btn" style="margin-top:4px" id="btnSug">Sugerir comidas para lo que me falta</button>`;
   $('#btnSug').addEventListener('click',fetchSuggestions);
 }
+let _sugs=[];
 async function fetchSuggestions(){
+  await ensureToday();
   const t=perfil.objetivos, c=totales();
   const rest={kcal:r0(t.kcal-c.kcal),prot:r0(t.prot-c.prot),carb:r0(t.carb-c.carb),fat:r0(t.fat-c.fat)};
   const stage=$('#sugStage');
@@ -905,9 +1017,10 @@ async function fetchSuggestions(){
   stage.innerHTML=`<div class="analyzing"><span class="spinner"></span> Buscando ideas que encajen…</div>`;
   try{
     const sugs=await suggestMeals(rest);
+    _sugs=sugs;
     stage.innerHTML=`
       <div class="callout callout--teal" style="margin-top:0">Te faltan por cubrir: <b class="num">${rest.kcal}</b> kcal · <b class="num">${rest.prot}</b> g proteína · <b class="num">${rest.carb}</b> g hidratos · <b class="num">${rest.fat}</b> g grasa</div>
-      ${sugs.map(s=>`
+      ${sugs.map((s,i)=>`
         <div class="sugcard">
           <div class="sugcard__t">${esc(s.nombre)}</div>
           <div class="sugcard__d">${esc(s.descripcion||'')}</div>
@@ -917,11 +1030,22 @@ async function fetchSuggestions(){
             <span class="tag num">H ${r0(s.carb)}g</span>
             <span class="tag num">G ${r0(s.fat)}g</span>
           </div>
+          <button class="btn btn--sm btn--ghost sugcard__add" data-sug="${i}">Me lo he comido · añadir al día</button>
         </div>`).join('')}
       <div class="aiwarn">Ideas orientativas generadas por IA. Ajusta las cantidades a tu gusto y a lo que tengas en casa.</div>`;
+    stage.querySelectorAll('[data-sug]').forEach(b=>b.addEventListener('click',()=>addSugerencia(+b.dataset.sug)));
   }catch(err){
     stage.innerHTML=`<div class="callout callout--danger">No he podido generar ideas ahora mismo (sin conexión o error). Inténtalo de nuevo en un momento.</div>`;
   }
+}
+async function addSugerencia(i){
+  const s=_sugs[i]; if(!s) return;
+  await ensureToday();
+  dia.entradas.push({id:'e'+Date.now(),nombre:s.nombre||'Comida',img:null,
+    kcal:+s.kcal||0,prot:+s.prot||0,carb:+s.carb||0,fat:+s.fat||0});
+  await saveDia();
+  renderHoy(); renderAdd(); renderSug(); switchTab('hoy');
+  toast(`${s.nombre} añadida (+${r0(s.kcal)} kcal)`);
 }
 async function suggestMeals(rest){
   const modo=perfil.macroModo;
@@ -941,6 +1065,7 @@ function renderProg(){
   const restante = (actual-perfil.pesoObjetivo);
   $('#s-prog').innerHTML=`
     <div class="topbar"><div class="topbar__title">Progreso</div></div>
+    ${semanaHTML()}
     <div class="card">
       <div class="card__t">Evolución del peso</div>
       <canvas id="weightChart"></canvas>
@@ -959,6 +1084,43 @@ function renderProg(){
     </div>`;
   $('#wSave').addEventListener('click',saveWeight);
   drawChart();
+}
+// Calorías de los últimos 7 días frente al objetivo
+function semanaHTML(){
+  const obj=perfil.objetivos.kcal;
+  const porFecha={}; historial.forEach(d=>porFecha[d.fecha]=d);
+  porFecha[dia.fecha]=dia;
+  const dias=[], base=new Date();
+  for(let i=6;i>=0;i--){
+    const d=new Date(base); d.setDate(base.getDate()-i);
+    const k=d.toLocaleDateString('sv');
+    const reg=porFecha[k];
+    const kcal=reg?reg.entradas.reduce((a,e)=>a+(+e.kcal||0),0):0;
+    dias.push({k,kcal,hay:!!(reg&&reg.entradas.length),hoy:i===0,
+      lab:d.toLocaleDateString('es-ES',{weekday:'short'}).replace('.','')});
+  }
+  const top=Math.max(obj*1.25, ...dias.map(d=>d.kcal));
+  const reg=dias.filter(d=>d.hay);
+  const media=reg.length?r0(reg.reduce((a,d)=>a+d.kcal,0)/reg.length):0;
+  const dentro=reg.filter(d=>d.kcal<=obj).length;
+  return `<div class="card">
+    <div class="card__t">Últimos 7 días</div>
+    <div class="week__bars">
+      <div class="week__goal" style="bottom:${obj/top*100}%"></div>
+      ${dias.map(d=>{
+        const cls=!d.hay?'week__bar--empty':d.kcal>obj?'week__bar--over':d.kcal>=obj*0.9?'week__bar--warn':'';
+        const h=d.hay?Math.max(d.kcal/top*100,3):3;
+        return `<div class="week__col" title="${d.k}: ${r0(d.kcal)} kcal"><div class="week__bar ${cls}" style="height:${h}%"></div></div>`;
+      }).join('')}
+    </div>
+    <div class="week__labels">
+      ${dias.map(d=>`<div class="week__lab num ${d.hoy?'week__lab--today':''}"><b>${d.hoy?'hoy':esc(d.lab)}</b>${d.hay?r0(d.kcal):'–'}</div>`).join('')}
+    </div>
+    ${reg.length
+      ? `<div class="kv"><span class="kv__k">Media de los días registrados</span><span class="kv__v num">${media.toLocaleString('es-ES')} kcal</span></div>
+         <div class="kv"><span class="kv__k">Días dentro del objetivo</span><span class="kv__v num">${dentro} de ${reg.length}</span></div>`
+      : `<div class="chartempty">Aún no hay días registrados</div>`}
+  </div>`;
 }
 async function saveWeight(){
   const v=+$('#wInput').value;
@@ -1069,7 +1231,7 @@ function renderPerfil(){
     if(confirm('¿Seguro? Se borrarán tu perfil y tu historial.')){
       const keys=await store.list('dia:'); for(const k of keys) await store.del(k);
       await store.del('perfil'); await store.del('pesos');
-      perfil=null;pesos=[];dia={fecha:todayKey(),entradas:[]};
+      perfil=null;pesos=[];historial=[];dia={fecha:todayKey(),entradas:[]};
       obData={sexo:'h',edad:'',peso:'',altura:'',actividad:'',pesoObjetivo:'',ritmo:'',macroModo:'equilibrado'};
       renderOnboarding();
     }
@@ -1082,6 +1244,11 @@ function renderPerfil(){
   if(perfil && perfil.objetivos) renderApp('hoy');
   else renderOnboarding();
 })();
+// Al volver a la app (p. ej. a la mañana siguiente), pasa al día nuevo
+document.addEventListener('visibilitychange', async()=>{
+  if(document.visibilityState!=='visible' || !dia || !$('#s-hoy')) return;
+  if(await ensureToday()) renderApp(currentTab);
+});
 </script>
 </body>
 </html>
